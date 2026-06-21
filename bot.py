@@ -2,12 +2,14 @@ import discord
 import aiohttp
 import asyncio
 import os
+from aiohttp import web
 from discord.ext import commands
 from discord import app_commands
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 OWNER_ID = 1252758938693144696
 PREFIX = "!"
+PORT = int(os.getenv("PORT", "8080"))
 SCRIPTBLOX_SEARCH = "https://scriptblox.com/api/script/search"
 
 intents = discord.Intents.default()
@@ -15,6 +17,19 @@ intents.message_content = True
 bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
 
 configured_channels = {}
+
+# ============ KEEP-ALIVE SERVER (Railway precisa disso) ============
+async def handle(request):
+    return web.Response(text="🟢 ScriptBlox Bot Online")
+
+async def start_webserver():
+    app = web.Application()
+    app.router.add_get("/", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    print(f"🌐 Web server na porta {PORT}")
 
 async def search_scriptblox(query: str, max_results: int = 5):
     params = {
@@ -138,4 +153,10 @@ async def slash_addchannel(interaction: discord.Interaction, channel: discord.Te
     configured_channels[interaction.guild.id] = channel.id
     await interaction.response.send_message(f"✅ {channel.mention}")
 
-bot.run(DISCORD_TOKEN)
+# ============ MAIN ============
+async def main():
+    asyncio.create_task(start_webserver())
+    await bot.start(DISCORD_TOKEN)
+
+if __name__ == "__main__":
+    asyncio.run(main())
