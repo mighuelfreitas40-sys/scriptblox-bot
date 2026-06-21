@@ -18,7 +18,7 @@ bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
 
 configured_channels = {}
 
-# ============ KEEP-ALIVE SERVER (Railway precisa disso) ============
+# ============ KEEP-ALIVE SERVER ============
 async def handle(request):
     return web.Response(text="🟢 ScriptBlox Bot Online")
 
@@ -31,6 +31,7 @@ async def start_webserver():
     await site.start()
     print(f"🌐 Web server na porta {PORT}")
 
+# ============ SEARCH ============
 async def search_scriptblox(query: str, max_results: int = 5):
     params = {
         "q": query,
@@ -40,15 +41,20 @@ async def search_scriptblox(query: str, max_results: int = 5):
         "sortBy": "views",
         "order": "desc"
     }
-    async with aiohttp.ClientSession() as session:
-        async with session.get(SCRIPTBLOX_SEARCH, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-            if resp.status != 200:
-                return None, f"Erro API: {resp.status}"
-            data = await resp.json()
-            scripts = data.get("result", {}).get("scripts", [])
-            if not scripts:
-                return None, "Nenhum script encontrado."
-            return scripts, None
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(SCRIPTBLOX_SEARCH, params=params, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                if resp.status != 200:
+                    return None, f"Erro API: {resp.status}"
+                data = await resp.json()
+                scripts = data.get("result", {}).get("scripts", [])
+                if not scripts:
+                    return None, "Nenhum script encontrado."
+                return scripts, None
+    except asyncio.TimeoutError:
+        return None, "⏱️ A API do ScriptBlox demorou demais. Tente novamente."
+    except Exception as e:
+        return None, f"❌ Erro: {str(e)}"
 
 def format_embed(script: dict) -> discord.Embed:
     game = script.get("game", {})
@@ -82,6 +88,7 @@ async def on_ready():
     except Exception as e:
         print(f"Erro sync: {e}")
 
+# ============ COMMANDS ============
 @bot.command(name="addchannel")
 async def addchannel(ctx, channel: discord.TextChannel = None):
     if ctx.author.id != OWNER_ID:
@@ -95,54 +102,72 @@ async def script_cmd(ctx, *, game: str):
     if ctx.guild and ctx.guild.id in configured_channels:
         if ctx.channel.id != configured_channels[ctx.guild.id]:
             return
-    async with ctx.typing():
-        scripts, err = await search_scriptblox(game)
-        if err:
-            return await ctx.reply(f"❌ {err}")
-        await ctx.reply(embed=format_embed(scripts[0]))
+    
+    # Responde rápido pra não ficar "pensando"
+    msg = await ctx.reply("🔍 Buscando scripts...")
+    
+    scripts, err = await search_scriptblox(game)
+    
+    if err:
+        return await msg.edit(content=f"❌ {err}")
+    
+    embed = format_embed(scripts[0])
+    await msg.edit(content=None, embed=embed)
 
 @bot.command(name="scriptlist", aliases=["sl", "lista"])
 async def scriptlist_cmd(ctx, *, game: str):
     if ctx.guild and ctx.guild.id in configured_channels:
         if ctx.channel.id != configured_channels[ctx.guild.id]:
             return
-    async with ctx.typing():
-        scripts, err = await search_scriptblox(game, 10)
-        if err:
-            return await ctx.reply(f"❌ {err}")
-        embed = discord.Embed(title=f"🔍 {game}", description="Reaja com o número:", color=0x3498db)
-        emojis = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
-        for i, s in enumerate(scripts[:10], 1):
-            g = s.get("game", {}).get("name", "Universal")
-            t = s.get("title", "Sem título")[:40]
-            v = s.get("views", 0)
-            p = "🟢" if not s.get("isPatched") else "🔴"
-            k = "🔒" if s.get("key") else "🔓"
-            embed.add_field(name=f"{emojis[i-1]} {p}{k} {t}", value=f"{g} | {v:,} views", inline=False)
-        msg = await ctx.reply(embed=embed)
-        for i in range(min(len(scripts), 10)):
-            await msg.add_reaction(emojis[i])
-        def check(r, u):
-            return u == ctx.author and r.message.id == msg.id
-        try:
-            r, _ = await bot.wait_for("reaction_add", timeout=60.0, check=check)
-            for i, e in enumerate(emojis):
-                if str(r) == e and i < len(scripts):
-                    await ctx.send(embed=format_embed(scripts[i]))
-                    break
-        except asyncio.TimeoutError:
-            await ctx.send("⏰ Tempo esgotado!")
+    
+    msg = await ctx.reply("🔍 Buscando lista...")
+    
+    scripts, err = await search_scriptblox(game, 10)
+    if err:
+        return await msg.edit(content=f"❌ {err}")
+    
+    embed = discord.Embed(title=f"🔍 {game}", description="Reaja com o número:", color=0x3498db)
+    emojis = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
+    
+    for i, s in enumerate(scripts[:10], 1):
+        g = s.get("game", {}).get("name", "Universal")
+        t = s.get("title", "Sem título")[:40]
+        v = s.get("views", 0)
+        p = "🟢" if not s.get("isPatched") else "🔴"
+        k = "🔒" if s.get("key") else "🔓"
+        embed.add_field(name=f"{emojis[i-1]} {p}{k} {t}", value=f"{g} | {v:,} views", inline=False)
+    
+    await msg.edit(content=None, embed=embed)
+    
+    for i in range(min(len(scripts), 10)):
+        await msg.add_reaction(emojis[i])
+    
+    def check(r, u):
+        return u == ctx.author and r.message.id == msg.id
+    
+    try:
+        r, _ = await bot.wait_for("reaction_add", timeout=60.0, check=check)
+        for i, e in enumerate(emojis):
+            if str(r) == e and i < len(scripts):
+                await ctx.send(embed=format_embed(scripts[i]))
+                break
+    except asyncio.TimeoutError:
+        await ctx.send("⏰ Tempo esgotado!")
 
+# ============ SLASH ============
 @bot.tree.command(name="script", description="Busca script para um jogo")
 @app_commands.describe(game="Nome do jogo")
 async def slash_script(interaction: discord.Interaction, game: str):
     if interaction.guild and interaction.guild.id in configured_channels:
         if interaction.channel.id != configured_channels[interaction.guild.id]:
             return await interaction.response.send_message("Canal errado!", ephemeral=True)
-    await interaction.response.defer()
+    
+    await interaction.response.defer(thinking=True)
+    
     scripts, err = await search_scriptblox(game)
     if err:
         return await interaction.followup.send(f"❌ {err}")
+    
     await interaction.followup.send(embed=format_embed(scripts[0]))
 
 @bot.tree.command(name="addchannel", description="Define canal do bot")
